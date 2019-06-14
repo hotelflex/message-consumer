@@ -1,6 +1,6 @@
 {
   "name": "@hotelflex/message-consumer",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "main": "src",
   "scripts": {
     "precommit": "pretty-quick --staged"
@@ -16,7 +16,7 @@
     "trailingComma": "all"
   },
   "dependencies": {
-    "@hotelflex/db-utils": "git+https://github.com/hotelflex/db-utils.git#2.2.0",
+    "@hotelflex/db-utils": "git+https://github.com/hotelflex/db-utils.git#2.5.4",
     "@hotelflex/id": "git+https://github.com/hotelflex/id.git#1.1.0",
     "bluebird": "^3.5.3",
     "lodash": "^4.17.11",
