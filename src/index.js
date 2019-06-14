@@ -32,6 +32,7 @@ class MessageConsumer {
     this.postgres = config.postgres
     this.logger = logger || console
     this.opsTable = config.opsTable || 'operations'
+    this.disableReconnect = config.disableReconnect || false
     if(!hasArgs(config)) throw new Error('Missing required arguments.')
     this.db = createDbPool(this.postgres, { min: 2, max: 8 })
     this.connect()
@@ -124,6 +125,7 @@ class MessageConsumer {
       this.logger.debug('RabbitMQ - Connected.')
     })
     rabbit.on('failed', () => {
+      if(this.disableReconnect) process.exit()
       this.logger.debug('RabbitMQ - Connection lost, reconnecting...')
     })
     rabbit.on('closed', () => {
