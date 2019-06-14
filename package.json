@@ -1,6 +1,6 @@
 {
   "name": "@hotelflex/message-consumer",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "main": "src",
   "scripts": {
     "precommit": "pretty-quick --staged"
@@ -19,7 +19,6 @@
     "@hotelflex/db-utils": "git+https://github.com/hotelflex/db-utils.git#2.2.0",
     "@hotelflex/id": "git+https://github.com/hotelflex/id.git#1.1.0",
     "bluebird": "^3.5.3",
-    "events": "^3.0.0",
     "lodash": "^4.17.11",
     "moment": "^2.24.0",
     "rabbot": "^2.1.0"

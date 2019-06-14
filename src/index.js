@@ -164,7 +164,7 @@ class MessageConsumer {
         priority: q.priority,
         noBatch: q.noBatch,
       }, _.isNil))),
-      bindings: this.queues.map((q => ({
+      bindings: this.queues.map(q => ({
         exchange: this.rabbitmq.exchange,
         target: q.channel,
         keys: [q.binding],
