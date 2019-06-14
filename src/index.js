@@ -2,28 +2,38 @@ const _ = require('lodash')
 const rabbit = require('rabbot')
 const ms = require('ms')
 const Id = require('@hotelflex/id')
-const { Errors } = require('@hotelflex/db-utils')
+const { createDbPool, Errors } = require('@hotelflex/db-utils')
 
 const getMetadata = headers => ({
   operationId: headers['operation-id'] || Id.create(),
   transactionId: headers['transaction-id'] || Id.create(),
 })
-const getSession = () => ({ isRoot: true })
+
+const hasArgs = (config={}) => Boolean(
+  config.rabbitmq
+  && config.postgres
+  && config.rabbitmq.host 
+  && config.rabbitmq.port 
+  && config.rabbitmq.exchange
+  && config.postgres.database
+  && config.postgres.host
+  && config.postgres.port
+)
 
 class MessageConsumer {
   constructor() {
     this.queues = []
     this.start = this.start.bind(this)
     this.connect = this.connect.bind(this)
-    this.registerConsumers = this.registerConsumers.bind(this)
+    this.registerQueues = this.registerQueues.bind(this)
   }
   start(config={}, logger) {
-    const { name, rabbitmq } = config
-    this.name = name
-    this.rabbitmq = rabbitmq
+    this.rabbitmq = config.rabbitmq
+    this.postgres = config.postgres
     this.logger = logger || console
-    if (!name || !rabbitmq.host || !rabbitmq.port || !rabbitmq.exchange)
-      throw new Error('Missing required arguments.')
+    this.opsTable = config.opsTable || 'operations'
+    if(!hasArgs(config)) throw new Error('Missing required arguments.')
+    this.db = createDbPool(this.postgres, { min: 2, max: 8 })
     this.connect()
   }
   registerQueues(queues=[]) {
@@ -34,12 +44,25 @@ class MessageConsumer {
         type: '#',
         handler: async message => {
           const start = Date.now()
-
           try {
+
+            /*
+            * ---- CHECK FOR DUPLICATE OPERATION -------
+            */
+
+            const opId = message.properties.headers['operation-id']
+            const op = await this.db(this.opsTable)
+              .where('id', opId)
+              .first('id')
+            if(op) throw new Errors.DuplicateOperation()
+
+            /*
+            * ---------- ATTEMPT ACTION ------------
+            */
+
             await action(
               message.body,
               getMetadata(message.properties.headers),
-              getSession(),
             )
 
             const end = Date.now()
@@ -54,8 +77,8 @@ class MessageConsumer {
               },
               'Message processing succeeded',
             )
-
             message.ack()
+
           } catch (err) {
             const end = Date.now()
             const duration = ms(end - start)
@@ -70,7 +93,6 @@ class MessageConsumer {
                 },
                 'Message already processed',
               )
-
               message.ack()
             } else {
               this.logger.error(
@@ -80,11 +102,9 @@ class MessageConsumer {
                   headers: message.properties.headers,
                   body: message.body,
                   error: err.message,
-                  stack: err.stack,
                 },
                 'Message processing failed',
               )
-
               message.nack()
             }
           }
@@ -100,28 +120,31 @@ class MessageConsumer {
     * ------ HANDLE CONNECTION EVENTS ------
     */
 
+    rabbit.on('connected', () => {
+      this.logger.debug('RabbitMQ - Connected.')
+    })
+    rabbit.on('failed', () => {
+      this.logger.debug('RabbitMQ - Connection lost, reconnecting...')
+    })
     rabbit.on('closed', () => {
-      this.logger.error('RabbitMQ connection closed')
+      //intentional - no reason for this to happen
+      this.logger.info('RabbitMQ - Connection closed.')
       process.exit()
     })
     rabbit.on('unreachable', () => {
-      this.logger.error('RabbitMQ connection unreachable')
-      process.exit()
-    })
-    rabbit.on('failed', () => {
-      this.logger.error('RabbitMQ connection failed')
+      //unintentional - reconnection attempts have failed
+      this.logger.error('RabbitMQ - Connection failed.')
       process.exit()
     })
 
     /*
     * -------------- CONNECT --------------
-    * Note: consumers must be registered
-    * before connecting
+    * Note: queues must be registered before connecting
     */
 
     rabbit.configure({
       connection: Object.assign(
-        { name: this.name, replyQueue: false },
+        { name: 'default', replyQueue: false },
         _.omit(this.rabbitmq, 'exchange'),
       ),
       exchanges: [
@@ -137,7 +160,7 @@ class MessageConsumer {
         name: q.channel,
         durable: true,
         subscribe: true,
-        limit: q.prefetch,
+        limit: q.limit,
         priority: q.priority,
         noBatch: q.noBatch,
       }, _.isNil))),
