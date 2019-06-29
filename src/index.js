@@ -1,176 +1,166 @@
 const _ = require('lodash')
-const rabbit = require('rabbot')
 const ms = require('ms')
 const Id = require('@hotelflex/id')
-const { createDbPool, Errors } = require('@hotelflex/db-utils')
+const { transaction } = require('objection')
+const { Broker, Handler } = require('@hotelflex/amqp')
 
-const getMetadata = headers => ({
-  operationId: headers['operation-id'] || Id.create(),
-  transactionId: headers['transaction-id'] || Id.create(),
+const AMQP_PROCESSED = 'amqp_processed_messages'
+const AMQP_OUTBOUND = 'amqp_outbound_messages'
+
+const unixToISO = time => (time ? new Date(time).toISOString() : null)
+
+const parseMsg = msg => ({
+  id: msg.properties.messageId,
+  key: msg.fields.routingKey,
+  body: JSON.parse(msg.content.toString()),
+  timestamp: unixToISO(msg.properties.timestamp),
+  correlationId: msg.properties.correlationId,
 })
 
-const hasArgs = (config={}) => Boolean(
-  config.rabbitmq
-  && config.postgres
-  && config.rabbitmq.host 
-  && config.rabbitmq.port 
-  && config.rabbitmq.exchange
-  && config.postgres.database
-  && config.postgres.host
-  && config.postgres.port
-)
+const hasArgs = (rabbitmq, knex, queues) =>
+  Boolean(rabbitmq && rabbitmq.host && rabbitmq.port && knex && queues)
 
 class MessageConsumer {
-  constructor() {
-    this.queues = []
-    this.start = this.start.bind(this)
-    this.connect = this.connect.bind(this)
-    this.registerQueues = this.registerQueues.bind(this)
+  async start(rabbitmq, knex, queues, logger) {
+    try {
+      if (!hasArgs(rabbitmq, knex, queues))
+        throw new Error('Missing required arguments')
+      this.rabbitmq = rabbitmq
+      this.knex = knex
+      this.queues = queues
+      this.log = logger || console
+      await Broker.connect(
+        this.rabbitmq,
+        this.log,
+      )
+      this.registerQueues()
+    } catch (err) {
+      this.log.error(
+        {
+          error: err.message,
+        },
+        '[MessageConsumer] Error starting up',
+      )
+    }
   }
-  start(config={}, logger) {
-    this.rabbitmq = config.rabbitmq
-    this.postgres = config.postgres
-    this.logger = logger || console
-    this.opsTable = config.opsTable || 'operations'
-    this.disableReconnect = config.disableReconnect || false
-    if(!hasArgs(config)) throw new Error('Missing required arguments.')
-    this.db = createDbPool(this.postgres, { min: 2, max: 8 })
-    this.connect()
-  }
-  registerQueues(queues=[]) {
-    this.queues = queues
-    this.queues.forEach(({ channel, action }) => {
-      rabbit.handle({
-        queue: channel,
-        type: '#',
-        handler: async message => {
+  registerQueues() {
+    this.queues.forEach(({ queue, binding, action, ...opts }) => {
+      /*
+      * ----- DEFINE HANDLER METHOD ------
+      */
+
+      const handle = msg =>
+        transaction(this.knex, async trx => {
+          let message
           const start = Date.now()
           try {
-
             /*
-            * ---- CHECK FOR DUPLICATE OPERATION -------
+            * ---CHECK IF ALREADY PROCESSED ------
             */
 
-            const opId = message.properties.headers['operation-id']
-            const op = await this.db(this.opsTable)
-              .where('id', opId)
+            message = parseMsg(msg)
+            const doc = await trx(AMQP_PROCESSED)
+              .where('id', message.id)
               .first('id')
-            if(op) throw new Errors.DuplicateOperation()
-
-            /*
-            * ---------- ATTEMPT ACTION ------------
-            */
-
-            await action(
-              message.body,
-              getMetadata(message.properties.headers),
-            )
-
-            const end = Date.now()
-            const duration = ms(end - start)
-
-            this.logger.info(
-              {
-                duration,
-                channel,
-                headers: message.properties.headers,
-                body: message.body,
-              },
-              'Message processing succeeded',
-            )
-            message.ack()
-
-          } catch (err) {
-            const end = Date.now()
-            const duration = ms(end - start)
-
-            if (err instanceof Errors.DuplicateOperation) {
-              this.logger.info(
+            if (doc) {
+              this.log.info(
                 {
-                  duration,
-                  channel,
-                  headers: message.properties.headers,
-                  body: message.body,
+                  queue,
+                  ...message,
                 },
                 'Message already processed',
               )
-              message.ack()
-            } else {
-              this.logger.error(
+              return
+            }
+            /*
+            * ------- AWAIT ACTION ------
+            */
+
+            const messages = await action(trx, message.body)
+
+            /*
+            * ---- CHECK FOR OUTBOUND MESSAGES ---
+            */
+
+            if (messages) {
+              await trx(AMQP_OUTBOUND)
+                .returning('id')
+                .insert(
+                  messages.map(m => ({
+                    id: Id.create(),
+                    key: m.key,
+                    body: JSON.stringify(m.body),
+                    timestamp: new Date().toISOString(),
+                    //include correlationId from current
+                    correlationId: message.correlationId,
+                  })),
+                )
+            }
+            /*
+            * ---- INSERT TO PROCESSED MESSAGES ---
+            */
+
+            await trx(AMQP_PROCESSED)
+              .returning('id')
+              .insert({
+                id: message.id,
+                key: message.key,
+                body: JSON.stringify(message.body),
+                timestamp: message.timestamp,
+                correlationId: message.correlationId,
+                processedAt: new Date().toISOString(),
+              })
+
+            this.log.info(
+              {
+                duration: ms(Date.now() - start),
+                queue,
+                ...message,
+              },
+              'Message processing succeeded',
+            )
+          } catch (err) {
+            if (err.message.indexOf(`${AMQP_PROCESSED}_pkey`) > -1) {
+              this.log.info(
                 {
-                  duration,
-                  channel,
-                  headers: message.properties.headers,
-                  body: message.body,
+                  queue,
+                  ...message,
+                },
+                'Message already processed',
+              )
+            } else {
+              this.log.error(
+                {
+                  duration: ms(Date.now() - start),
+                  queue,
+                  ...message,
                   error: err.message,
                 },
                 'Message processing failed',
               )
-              message.nack()
+              throw err
             }
           }
-        },
-      })
-    })
-  }
-  connect() {
-    if(this.queues.length === 0) 
-      throw new Error('No queues have been registered')
+        })
 
-    /*
-    * ------ HANDLE CONNECTION EVENTS ------
-    */
+      /*
+      * ----- END OF HANDLER METHOD ------
+      */
 
-    rabbit.on('connected', () => {
-      this.logger.debug('RabbitMQ - Connected.')
-    })
-    rabbit.on('failed', () => {
-      if(this.disableReconnect) process.exit()
-      this.logger.debug('RabbitMQ - Connection lost, reconnecting...')
-    })
-    rabbit.on('closed', () => {
-      //intentional - no reason for this to happen
-      this.logger.info('RabbitMQ - Connection closed.')
-      process.exit()
-    })
-    rabbit.on('unreachable', () => {
-      //unintentional - reconnection attempts have failed
-      this.logger.error('RabbitMQ - Connection failed.')
-      process.exit()
-    })
-
-    /*
-    * -------------- CONNECT --------------
-    * Note: queues must be registered before connecting
-    */
-
-    rabbit.configure({
-      connection: Object.assign(
-        { name: 'default', replyQueue: false },
-        _.omit(this.rabbitmq, 'exchange'),
-      ),
-      exchanges: [
-        {
-          name: this.rabbitmq.exchange,
-          type: 'topic',
-          durable: true,
-          persistent: true,
-          publishTimeout: 2000,
-        },
-      ],
-      queues: this.queues.map(q => (_.omitBy({
-        name: q.channel,
-        durable: true,
-        subscribe: true,
-        limit: q.limit,
-        priority: q.priority,
-        noBatch: q.noBatch,
-      }, _.isNil))),
-      bindings: this.queues.map(q => ({
-        exchange: this.rabbitmq.exchange,
-        target: q.channel,
-        keys: [q.binding],
-      })),
+      Broker.registerHandler(
+        new Handler(
+          _.omitBy(
+            {
+              ...opts,
+              queue,
+              binding,
+              action: handle,
+            },
+            _.isNil,
+          ),
+          this.log,
+        ),
+      )
     })
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@hotelflex/message-consumer",
-  "version": "1.0.4",
+  "version": "2.0.0",
   "main": "src",
   "scripts": {
     "precommit": "pretty-quick --staged"
@@ -16,11 +16,10 @@
     "trailingComma": "all"
   },
   "dependencies": {
-    "@hotelflex/db-utils": "git+https://github.com/hotelflex/db-utils.git#2.5.4",
+    "@hotelflex/amqp": "git+https://github.com/hotelflex/amqp.git#1.0.0",
     "@hotelflex/id": "git+https://github.com/hotelflex/id.git#1.1.0",
-    "bluebird": "^3.5.3",
     "lodash": "^4.17.11",
-    "moment": "^2.24.0",
-    "rabbot": "^2.1.0"
+    "ms": "^2.1.2",
+    "objection": "^1.6.9"
   }
 }
