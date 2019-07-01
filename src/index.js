@@ -23,7 +23,7 @@ const hasArgs = (rabbitmq, knexClient, queues) =>
 class MessageConsumer {
   async start(rabbitmq, knexClient, queues, logger) {
     try {
-      if (!hasArgs(rabbitmq, knex, queues))
+      if (!hasArgs(rabbitmq, knexClient, queues))
         throw new Error('Missing required arguments')
       this.rabbitmq = rabbitmq
       this.knex = knexClient
