@@ -17,16 +17,16 @@ const parseMsg = msg => ({
   correlationId: msg.properties.correlationId,
 })
 
-const hasArgs = (rabbitmq, knex, queues) =>
-  Boolean(rabbitmq && rabbitmq.host && rabbitmq.port && knex && queues)
+const hasArgs = (rabbitmq, knexClient, queues) =>
+  Boolean(rabbitmq && rabbitmq.host && rabbitmq.port && knexClient && queues)
 
 class MessageConsumer {
-  async start(rabbitmq, knex, queues, logger) {
+  async start(rabbitmq, knexClient, queues, logger) {
     try {
       if (!hasArgs(rabbitmq, knex, queues))
         throw new Error('Missing required arguments')
       this.rabbitmq = rabbitmq
-      this.knex = knex
+      this.knex = knexClient
       this.queues = queues
       this.log = logger || console
       await Broker.connect(
