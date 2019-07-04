@@ -18,17 +18,19 @@ const parseMsg = msg => ({
 })
 
 const hasArgs = (rabbitmq, knexClient, queues) =>
-  Boolean(rabbitmq && rabbitmq.host && rabbitmq.port && knexClient && queues)
+  Boolean(
+    rabbitmq && rabbitmq.hostname && rabbitmq.port && knexClient && queues,
+  )
 
 class MessageConsumer {
   async start(rabbitmq, knexClient, queues, logger) {
     try {
+      this.log = logger || console
       if (!hasArgs(rabbitmq, knexClient, queues))
         throw new Error('Missing required arguments')
       this.rabbitmq = rabbitmq
       this.knex = knexClient
       this.queues = queues
-      this.log = logger || console
       await Broker.connect(
         this.rabbitmq,
         this.log,
